@@ -11,10 +11,11 @@ from openai import AsyncOpenAI
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_KEY = os.getenv("API_KEY")
 
-BASE_URL = "https://proxyapi.ru"
-MODEL_TEXT_FAST = "gpt-4o-mini"
-MODEL_TEXT_SMART = "gpt-4o"
-MODEL_IMAGE = "gpt-image-1"
+BASE_URL = "https://api." + "proxyapi.ru/v1"
+MODEL_TEXT_FAST = "openai/gpt-6.2-sol"
+MODEL_TEXT_SMART = "anthropic/claude-sonnet-5.5"
+MODEL_IMAGE = "openai/gpt-image-2.6-flare"
+
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
