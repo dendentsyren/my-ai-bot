@@ -10,10 +10,10 @@ from openai import AsyncOpenAI
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API_KEY = os.getenv("API_KEY")
 
-BASE_URL = "https://proxyapi.ru"
-MODEL_TEXT_FAST = "openai/gpt-6.2-sol"
-MODEL_TEXT_SMART = "anthropic/claude-sonnet-5.5"
-MODEL_IMAGE = "openai/gpt-image-2.6-flare"
+BASE_URL = "https://api.proxyapi.ru/v1"
+MODEL_TEXT_FAST = "openai/gpt-5-mini"
+MODEL_TEXT_SMART = "anthropic/claude-sonnet-4-5"
+MODEL_IMAGE = "openai/gpt-image-1"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
@@ -91,17 +91,17 @@ async def cmd_start(message: types.Message):
 @dp.message(F.text == "✍️ Написать / Решить задачу")
 async def mode_fast(message: types.Message):
     user_modes[message.from_user.id] = "fast"
-    await message.answer("✍️ Режим **Быстрый текст / Учеба** включен. Напиши свой вопрос:")
+    await message.answer("✍️ Режим **Быстрый текст / Учеба** включен. Напиши свой вопрос:", parse_mode="Markdown")
 
 @dp.message(F.text == "🧠 Сложный анализ / Код")
 async def mode_smart(message: types.Message):
     user_modes[message.from_user.id] = "smart"
-    await message.answer("🧠 Режим **Глубокий анализ / Код (Claude)** включен. Опиши задачу:")
+    await message.answer("🧠 Режим **Глубокий анализ / Код (Claude)** включен. Опиши задачу:", parse_mode="Markdown")
 
 @dp.message(F.text == "🎨 Создать картинку")
 async def mode_image(message: types.Message):
     user_modes[message.from_user.id] = "image"
-    await message.answer("🎨 Режим **Генерация картинок** включен. Опиши, что нарисовать:")
+    await message.answer("🎨 Режим **Генерация картинок** включен. Опиши, что нарисовать:", parse_mode="Markdown")
 
 @dp.message(F.text == "👤 Мой профиль / Баланс")
 async def show_profile(message: types.Message):
@@ -146,7 +146,7 @@ async def handle_ai_request(message: types.Message):
                 n=1,
                 size="1024x1024"
             )
-            image_url = response.data.url
+            image_url = response.data[0].url
             update_balance(user_id, img_delta=-1)
             await wait_msg.delete()
             await message.answer_photo(photo=image_url, caption=f"✅ Готово! Осталось картинок: {img_bal - 1}")
@@ -170,7 +170,7 @@ async def handle_ai_request(message: types.Message):
             ],
             max_tokens=2000
         )
-        answer_text = response.choices.message.content
+        answer_text = response.choices[0].message.content
         update_balance(user_id, text_delta=-1)
         await wait_msg.delete()
         await message.answer(answer_text)
@@ -184,3 +184,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
