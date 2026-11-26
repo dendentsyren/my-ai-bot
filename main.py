@@ -3,6 +3,8 @@ import asyncio
 import logging
 import sqlite3
 import html
+import base64
+import io
 from contextlib import closing
 
 from aiogram import Bot, Dispatcher, F, types
@@ -10,6 +12,7 @@ from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton,
+    BufferedInputFile
 )
 from aiogram.exceptions import TelegramBadRequest
 from openai import AsyncOpenAI
@@ -340,15 +343,30 @@ async def handle_ai_request(message: types.Message):
                 n=1,
             )
             if response.data and len(response.data) > 0:
-                image_url = response.data[0].url
-                await safe_delete(wait_msg)
-                (_, img_bal), _ = get_user(user_id)
-                await message.answer_photo(
-                    photo=image_url,
-                    caption=f"✅ Готово! Осталось картинок: {img_bal}",
-                )
+                image_data = response.data[0]
+                
+                # Если API вернул ссылку (URL)
+                if image_data.url:
+                    await safe_delete(wait_msg)
+                    (_, img_bal), _ = get_user(user_id)
+                    await message.answer_photo(
+                        photo=image_data.url,
+                        caption=f"✅ Готово! Осталось картинок: {img_bal}",
+                    )
+                # Если API вернул Base64
+                elif image_data.b64_json:
+                    photo_bytes = io.BytesIO(base64.b64decode(image_data.b64_json))
+                    await safe_delete(wait_msg)
+                    (_, img_bal), _ = get_user(user_id)
+                    await message.answer_photo(
+                        photo=BufferedInputFile(photo_bytes.read(), filename="image.png"),
+                        caption=f"✅ Готово! Осталось картинок: {img_bal}",
+                    )
+                else:
+                    raise ValueError("Пустой ответ от API")
             else:
-                raise ValueError("API вернуло пустой ответ")
+                raise ValueError("API вернуло пустой список данных")
+                
         except Exception as e:
             logger.error(f"Ошибка картинки: {e}")
             update_balance(user_id, img_delta=+1)
