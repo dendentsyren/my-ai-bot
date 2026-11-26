@@ -6,6 +6,7 @@ import html
 import base64
 import io
 from contextlib import closing
+from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart, Command
@@ -54,28 +55,36 @@ def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    # Создаем таблицу с новыми полями
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            text_balance INTEGER DEFAULT 5,
+            img_balance INTEGER DEFAULT 1,
+            referred_by INTEGER DEFAULT 0,
+            has_made_request INTEGER DEFAULT 0,
+            last_bonus_date TEXT DEFAULT '',
+            ref_bonus_paid INTEGER DEFAULT 0
+        )
+    """)
+    conn.commit()
     return conn
-
-def init_db() -> None:
-    with closing(get_conn()) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                text_balance INTEGER DEFAULT 5,
-                img_balance INTEGER DEFAULT 1,
-                referred_by INTEGER DEFAULT 0
-            )
-        """)
-        conn.commit()
 
 def get_user(user_id: int, ref_id: int = 0) -> tuple[tuple[int, int], bool]:
     with closing(get_conn()) as conn:
         cur = conn.execute(
-            "SELECT text_balance, img_balance FROM users WHERE user_id = ?",
+            "SELECT text_balance, img_balance, last_bonus_date FROM users WHERE user_id = ?",
             (user_id,),
         )
         row = cur.fetchone()
         if row:
+            # Проверка ежедневного бонуса
+            today = datetime.now().strftime("%Y-%m-%d")
+            if row[2] != today:
+                conn.execute("UPDATE users SET text_balance = text_balance + 1, last_bonus_date = ? WHERE user_id = ?", (today, user_id))
+                conn.commit()
+                # Возвращаем флаг, что бонус получен (для отображения сообщения)
+                return (row[0] + 1, row[1]), "daily_bonus"
             return (row[0], row[1]), False
 
         valid_ref = 0
@@ -84,19 +93,14 @@ def get_user(user_id: int, ref_id: int = 0) -> tuple[tuple[int, int], bool]:
             if cur.fetchone():
                 valid_ref = ref_id
 
+        today = datetime.now().strftime("%Y-%m-%d")
         conn.execute(
-            "INSERT INTO users (user_id, text_balance, img_balance, referred_by) "
-            "VALUES (?, 5, 1, ?)",
-            (user_id, valid_ref),
+            "INSERT INTO users (user_id, text_balance, img_balance, referred_by, last_bonus_date) "
+            "VALUES (?, 5, 1, ?, ?)",
+            (user_id, valid_ref, today),
         )
-        if valid_ref:
-            conn.execute(
-                "UPDATE users SET text_balance = text_balance + 5, "
-                "img_balance = img_balance + 1 WHERE user_id = ?",
-                (valid_ref,),
-            )
         conn.commit()
-        return (5, 1), True
+        return (5, 1), True # is_new
 
 def update_balance(user_id: int, text_delta: int = 0, img_delta: int = 0) -> None:
     with closing(get_conn()) as conn:
@@ -118,13 +122,23 @@ def try_consume(user_id: int, kind: str, amount: int = 1) -> bool:
         conn.commit()
         return cur.rowcount > 0
 
-def get_stats() -> tuple[int, int, int]:
+def check_and_pay_referral(user_id: int):
+    """Проверяет, есть ли реферер, и начисляет бонус, если это первый запрос друга."""
     with closing(get_conn()) as conn:
-        cur = conn.execute(
-            "SELECT COUNT(*), COALESCE(SUM(text_balance), 0), "
-            "COALESCE(SUM(img_balance), 0) FROM users"
-        )
-        return cur.fetchone()
+        cur = conn.execute("SELECT referred_by, has_made_request, ref_bonus_paid FROM users WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        if row and row[0] != 0 and row[1] == 0:
+            ref_id = row[0]
+            # Отмечаем, что друг сделал запрос, и бонус выплачен
+            conn.execute("UPDATE users SET has_made_request = 1, ref_bonus_paid = 1 WHERE user_id = ?", (user_id,))
+            # Начисляем бонус пригласившему
+            conn.execute(
+                "UPDATE users SET text_balance = text_balance + 5, img_balance = img_balance + 1 WHERE user_id = ?",
+                (ref_id,),
+            )
+            conn.commit()
+            return ref_id
+    return None
 
 # ---------- Клавиатуры ----------
 main_kb = ReplyKeyboardMarkup(
@@ -192,26 +206,22 @@ async def cmd_start(message: types.Message):
     args = message.text.split(maxsplit=1)
     ref_id = int(args[1]) if len(args) > 1 and args[1].isdigit() else 0
 
-    (text_bal, img_bal), is_new = get_user(message.from_user.id, ref_id)
+    (text_bal, img_bal), status = get_user(message.from_user.id, ref_id)
     user_modes[message.from_user.id] = "fast"
 
-    if is_new and ref_id and ref_id != message.from_user.id:
-        try:
-            await bot.send_message(
-                ref_id,
-                "🎉 По твоей ссылке зашёл друг! "
-                "Тебе начислено *+5 текстов* и *+1 картинка*.",
-                parse_mode="Markdown",
-            )
-        except Exception:
-            pass
+    bonus_msg = ""
+    if status == "daily_bonus":
+        bonus_msg = "\n\n🎁 *Ежедневный бонус:* +1 текстовый запрос!"
+    elif status is True and ref_id and ref_id != message.from_user.id:
+        bonus_msg = "\n\n🤝 *Вы пришли по ссылке друга!* Как только сделаете первый запрос, ваш друг получит бонус."
 
     await message.answer(
         "👋 *Привет! Я твой универсальный ИИ-помощник.*\n\n"
         "Здесь собраны лучшие нейросети мира — "
         "*без зарубежных карт и сложных настроек*.\n\n"
         f"🎁 Твой баланс: *{text_bal} текстовых запросов* "
-        f"и *{img_bal} генераций картинок*.\n\n"
+        f"и *{img_bal} генераций картинок*."
+        f"{bonus_msg}\n\n"
         "👇 Выбери режим в меню ниже и просто напиши свой запрос:",
         reply_markup=main_kb,
         parse_mode="Markdown",
@@ -221,7 +231,9 @@ async def cmd_start(message: types.Message):
 async def cmd_admin(message: types.Message):
     if not is_admin(message.from_user.id):
         return
-    total_users, total_texts, total_imgs = get_stats()
+    with closing(get_conn()) as conn:
+        cur = conn.execute("SELECT COUNT(*), COALESCE(SUM(text_balance), 0), COALESCE(SUM(img_balance), 0) FROM users")
+        total_users, total_texts, total_imgs = cur.fetchone()
     await message.answer(
         "👑 *Панель администратора*\n\n"
         f"👥 Всего пользователей: *{total_users}*\n"
@@ -269,7 +281,7 @@ async def cmd_add_balance(message: types.Message):
 async def mode_fast(message: types.Message):
     user_modes[message.from_user.id] = "fast"
     await message.answer("✍️ Режим *Быстрый текст / Учеба* включён.\n"
-                         "Напиши свой вопрос текстом или отправь голосовое сообщение.",
+                         "Напиши свой вопрос или отправь голосовое сообщение.",
                          parse_mode="Markdown")
 
 @dp.message(F.text == "🧠 Сложный анализ / Код")
@@ -293,11 +305,16 @@ async def mode_image(message: types.Message):
 
 @dp.message(F.text == "👤 Мой профиль / Баланс")
 async def show_profile(message: types.Message):
-    (text_bal, img_bal), _ = get_user(message.from_user.id)
+    (text_bal, img_bal), status = get_user(message.from_user.id)
+    bonus_msg = ""
+    if status == "daily_bonus":
+        bonus_msg = "\n\n🎁 *Ежедневный бонус:* +1 текстовый запрос!"
+        
     await message.answer(
         f"👤 *Твой профиль (ID: `{message.from_user.id}`)*\n\n"
         f"💬 Остаток текстовых запросов: *{text_bal}*\n"
-        f"🎨 Остаток картинок: *{img_bal}*",
+        f"🎨 Остаток картинок: *{img_bal}*"
+        f"{bonus_msg}",
         parse_mode="Markdown",
     )
 
@@ -310,8 +327,8 @@ async def show_referral(message: types.Message):
     ref_link = f"https://t.me/{bot_username}?start={message.from_user.id}"
     await message.answer(
         "🎁 *Получай запросы бесплатно!*\n\n"
-        "Отправь свою личную ссылку друзьям. За каждого нового "
-        "пользователя ты получишь *+5 текстов* и *+1 картинку*:\n\n"
+        "Отправь свою личную ссылку друзьям. Бонус (+5 текстов и +1 картинка) начисляется, "
+        "как только ваш друг сделает свой первый запрос в боте:\n\n"
         f"`{ref_link}`",
         parse_mode="Markdown",
     )
@@ -356,7 +373,6 @@ async def cb_menu_back(callback: types.CallbackQuery):
     await callback.answer()
 
 # ---------- ОПЛАТА ЗВЕЗДАМИ (STARS) ----------
-
 async def send_invoice(chat_id: int, title: str, description: str, payload: str, stars_amount: int):
     await bot.send_invoice(
         chat_id=chat_id,
@@ -477,6 +493,18 @@ async def handle_ai_request(message: types.Message):
             "Нажми «💎 Купить подписку» или «🎁 Бесплатные запросы».")
         return
 
+    # Проверяем реферальный бонус (сработает только при первом запросе)
+    ref_paid_to = check_and_pay_referral(user_id)
+    if ref_paid_to:
+        try:
+            await bot.send_message(
+                ref_paid_to,
+                "🤝 Твой друг сделал первый запрос! Тебе начислено *+5 текстов* и *+1 картинка*.",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
     selected_model = MODEL_TEXT_SMART if mode == "smart" else MODEL_TEXT_FAST
     wait_msg = await message.answer("⏳ Думаю над ответом...")
 
@@ -504,23 +532,28 @@ async def handle_ai_request(message: types.Message):
 @dp.message(F.voice)
 async def handle_voice(message: types.Message):
     user_id = message.from_user.id
-    
-    # Голосовое сообщение списывает 2 запроса (защита от длинных записей)
     cost = 2
+    
     if not try_consume(user_id, "text", amount=cost):
         await message.answer(
             "❌ Закончились текстовые запросы (для голоса нужно 2). "
             "Нажми «💎 Купить подписку» или «🎁 Бесплатные запросы».")
         return
 
+    # Проверяем реферальный бонус (на случай, если первым запросом стал голос)
+    ref_paid_to = check_and_pay_referral(user_id)
+    if ref_paid_to:
+        try:
+            await bot.send_message(ref_paid_to, "🤝 Твой друг сделал первый запрос! Тебе начислено *+5 текстов* и *+1 картинка*.", parse_mode="Markdown")
+        except Exception:
+            pass
+
     wait_msg = await message.answer("🎤 Распознаю голосовое сообщение...")
     
     try:
-        # Скачиваем голосовой файл
         file_info = await bot.get_file(message.voice.file_id)
         file_bytes = await bot.download_file(file_info.file_path)
         
-        # Отправляем в Whisper
         transcript = await ai_client.audio.transcriptions.create(
             model=MODEL_VOICE,
             file=("voice.ogg", file_bytes.read()),
@@ -532,7 +565,6 @@ async def handle_voice(message: types.Message):
             
         await wait_msg.edit_text(f"🗣️ *Вы сказали:* {text_query}\n\n⏳ Думаю над ответом...", parse_mode="Markdown")
         
-        # Отправляем распознанный текст в нейросеть
         response = await ai_client.chat.completions.create(
             model=MODEL_TEXT_FAST,
             messages=[
@@ -548,7 +580,7 @@ async def handle_voice(message: types.Message):
         
     except Exception as e:
         logger.error(f"Ошибка Voice: {e}")
-        update_balance(user_id, text_delta=cost) # Возврат баланса
+        update_balance(user_id, text_delta=cost)
         await safe_delete(wait_msg)
         await message.answer(f"⚠️ Ошибка распознавания голоса: {str(e)[:200]}")
 
@@ -561,7 +593,10 @@ async def fallback(message: types.Message):
 
 # ---------- Запуск ----------
 async def main() -> None:
-    init_db()
+    # Инициализация БД (в новом коде init_db заменен на создание таблицы при get_conn)
+    with closing(get_conn()) as conn:
+        pass
+
     global bot_username
     try:
         me = await bot.get_me()
