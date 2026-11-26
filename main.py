@@ -25,7 +25,8 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 BASE_URL = "https://api.proxyapi.ru/v1"
 
 MODEL_TEXT_FAST = "openai/gpt-6.2-sol"
-MODEL_TEXT_SMART = "anthropic/claude-3-haiku-20240307"
+# Меняем сложную модель на стабильную OpenAI, чтобы не было ошибок 400
+MODEL_TEXT_SMART = "openai/gpt-4o" 
 MODEL_IMAGE = "openai/gpt-image-1.5"
 
 DB_PATH = "users.db"
@@ -262,7 +263,7 @@ async def mode_fast(message: types.Message):
 @dp.message(F.text == "🧠 Сложный анализ / Код")
 async def mode_smart(message: types.Message):
     user_modes[message.from_user.id] = "smart"
-    await message.answer("🧠 Режим *Глубокий анализ / Код (Claude)* включён. "
+    await message.answer("🧠 Режим *Глубокий анализ / Код (GPT-4o)* включён. "
                          "Опиши задачу:", parse_mode="Markdown")
 
 @dp.message(F.text == "🎨 Создать картинку")
@@ -383,29 +384,16 @@ async def handle_ai_request(message: types.Message):
     wait_msg = await message.answer("⏳ Думаю над ответом...")
 
     try:
-        # Убрали max_tokens для сложного режима, чтобы Claude не ругался
-        if mode == "smart":
-            response = await ai_client.chat.completions.create(
-                model=selected_model,
-                messages=[
-                    {"role": "system",
-                     "content": "Ты полезный ИИ-помощник. Отвечай чётко, "
-                                "структурированно и на русском языке."},
-                    {"role": "user", "content": message.text},
-                ],
-            )
-        else:
-            response = await ai_client.chat.completions.create(
-                model=selected_model,
-                messages=[
-                    {"role": "system",
-                     "content": "Ты полезный ИИ-помощник. Отвечай чётко, "
-                                "структурированно и на русском языке."},
-                    {"role": "user", "content": message.text},
-                ],
-                max_tokens=2000,
-            )
-            
+        response = await ai_client.chat.completions.create(
+            model=selected_model,
+            messages=[
+                {"role": "system",
+                 "content": "Ты полезный ИИ-помощник. Отвечай чётко, "
+                            "структурированно и на русском языке."},
+                {"role": "user", "content": message.text},
+            ],
+            max_tokens=2000,
+        )
         answer_text = response.choices[0].message.content or "(пустой ответ)"
         await safe_delete(wait_msg)
         await safe_send_text(message, answer_text)
