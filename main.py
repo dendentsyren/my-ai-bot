@@ -23,13 +23,7 @@ BASE_URL = "https://api.proxyapi.ru/v1"
 
 MODEL_TEXT_FAST = "openai/gpt-6.2-sol"
 MODEL_TEXT_SMART = "anthropic/claude-sonnet-5.5"
-
-# Модели для картинок (попробует по очереди, пока одна не сработает)
-MODELS_IMAGE = [
-    "openai/gpt-image-1.5",
-    "black-forest-labs/flux.2-klein-4b",
-    "qwen/qwen-image-2.1-turbo"
-]
+MODEL_IMAGE = "openai/gpt-image-1.5"
 
 DB_PATH = "users.db"
 TG_TEXT_LIMIT = 4000
@@ -50,14 +44,12 @@ ai_client = AsyncOpenAI(api_key=API_KEY, base_url=BASE_URL)
 user_modes: dict[int, str] = {}
 bot_username: str | None = None
 
-
 # ---------- БД ----------
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     return conn
-
 
 def init_db() -> None:
     with closing(get_conn()) as conn:
@@ -70,7 +62,6 @@ def init_db() -> None:
             )
         """)
         conn.commit()
-
 
 def get_user(user_id: int, ref_id: int = 0) -> tuple[tuple[int, int], bool]:
     with closing(get_conn()) as conn:
@@ -102,7 +93,6 @@ def get_user(user_id: int, ref_id: int = 0) -> tuple[tuple[int, int], bool]:
         conn.commit()
         return (5, 1), True
 
-
 def update_balance(user_id: int, text_delta: int = 0, img_delta: int = 0) -> None:
     with closing(get_conn()) as conn:
         conn.execute(
@@ -111,7 +101,6 @@ def update_balance(user_id: int, text_delta: int = 0, img_delta: int = 0) -> Non
             (text_delta, img_delta, user_id),
         )
         conn.commit()
-
 
 def try_consume(user_id: int, kind: str) -> bool:
     col = "text_balance" if kind == "text" else "img_balance"
@@ -124,7 +113,6 @@ def try_consume(user_id: int, kind: str) -> bool:
         conn.commit()
         return cur.rowcount > 0
 
-
 def get_stats() -> tuple[int, int, int]:
     with closing(get_conn()) as conn:
         cur = conn.execute(
@@ -132,7 +120,6 @@ def get_stats() -> tuple[int, int, int]:
             "COALESCE(SUM(img_balance), 0) FROM users"
         )
         return cur.fetchone()
-
 
 # ---------- Клавиатуры ----------
 main_kb = ReplyKeyboardMarkup(
@@ -161,11 +148,9 @@ tariffs_kb = InlineKeyboardMarkup(
     ]
 )
 
-
 # ---------- Утилиты ----------
 def split_text(text: str, limit: int = TG_TEXT_LIMIT) -> list[str]:
     return [text[i:i + limit] for i in range(0, len(text), limit)] or [""]
-
 
 async def safe_send_text(message: types.Message, text: str) -> None:
     for chunk in split_text(text):
@@ -175,7 +160,6 @@ async def safe_send_text(message: types.Message, text: str) -> None:
             logger.warning("send_text failed (%s), retry plain", e)
             await message.answer(html.escape(chunk), parse_mode=None)
 
-
 async def safe_delete(message: types.Message | None) -> None:
     if not message:
         return
@@ -184,10 +168,8 @@ async def safe_delete(message: types.Message | None) -> None:
     except TelegramBadRequest:
         pass
 
-
 def is_admin(user_id: int) -> bool:
     return ADMIN_ID != 0 and user_id == ADMIN_ID
-
 
 # ---------- Хендлеры ----------
 @dp.message(CommandStart())
@@ -220,7 +202,6 @@ async def cmd_start(message: types.Message):
         parse_mode="Markdown",
     )
 
-
 @dp.message(Command("admin"))
 async def cmd_admin(message: types.Message):
     if not is_admin(message.from_user.id):
@@ -236,7 +217,6 @@ async def cmd_admin(message: types.Message):
         "Пример: `/add 123456789 100 10`",
         parse_mode="Markdown",
     )
-
 
 @dp.message(Command("add"))
 async def cmd_add_balance(message: types.Message):
@@ -270,20 +250,17 @@ async def cmd_add_balance(message: types.Message):
     except Exception:
         pass
 
-
 @dp.message(F.text == "✍️ Написать / Решить задачу")
 async def mode_fast(message: types.Message):
     user_modes[message.from_user.id] = "fast"
     await message.answer("✍️ Режим *Быстрый текст / Учеба* включён. "
                          "Напиши свой вопрос:", parse_mode="Markdown")
 
-
 @dp.message(F.text == "🧠 Сложный анализ / Код")
 async def mode_smart(message: types.Message):
     user_modes[message.from_user.id] = "smart"
     await message.answer("🧠 Режим *Глубокий анализ / Код (Claude)* включён. "
                          "Опиши задачу:", parse_mode="Markdown")
-
 
 @dp.message(F.text == "🎨 Создать картинку")
 async def mode_image(message: types.Message):
@@ -297,7 +274,6 @@ async def mode_image(message: types.Message):
     await message.answer("🎨 Режим *Генерация картинок* включён. "
                          "Опиши, что нарисовать:", parse_mode="Markdown")
 
-
 @dp.message(F.text == "👤 Мой профиль / Баланс")
 async def show_profile(message: types.Message):
     (text_bal, img_bal), _ = get_user(message.from_user.id)
@@ -307,7 +283,6 @@ async def show_profile(message: types.Message):
         f"🎨 Остаток картинок: *{img_bal}*",
         parse_mode="Markdown",
     )
-
 
 @dp.message(F.text == "🎁 Бесплатные запросы")
 async def show_referral(message: types.Message):
@@ -324,7 +299,6 @@ async def show_referral(message: types.Message):
         parse_mode="Markdown",
     )
 
-
 @dp.message(F.text == "💎 Купить подписку")
 async def show_tariffs(message: types.Message):
     await message.answer(
@@ -333,7 +307,6 @@ async def show_tariffs(message: types.Message):
         reply_markup=tariffs_kb,
         parse_mode="Markdown",
     )
-
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def process_buy(callback: types.CallbackQuery):
@@ -345,7 +318,6 @@ async def process_buy(callback: types.CallbackQuery):
         )
     finally:
         await callback.answer()
-
 
 @dp.message(F.text & ~F.text.startswith("/"))
 async def handle_ai_request(message: types.Message):
@@ -361,40 +333,27 @@ async def handle_ai_request(message: types.Message):
             return
 
         wait_msg = await message.answer("🎨 Рисую картинку, подождите 10–15 секунд...")
-        success = False
-        image_url = None
-        last_error = None
-
-        for model_name in MODELS_IMAGE:
-            try:
-                response = await ai_client.images.generate(
-                    model=model_name,
-                    prompt=message.text,
-                    n=1,
-                )
-                if response.data and len(response.data) > 0:
-                    image_url = response.data[0].url
-                    success = True
-                    logger.info(f"Успешно сгенерировано через модель: {model_name}")
-                    break
-            except Exception as e:
-                logger.warning(f"Модель {model_name} не сработала: {e}")
-                last_error = e
-                continue
-
-        if success and image_url:
-            await safe_delete(wait_msg)
-            (_, img_bal), _ = get_user(user_id)
-            await message.answer_photo(
-                photo=image_url,
-                caption=f"✅ Готово! Осталось картинок: {img_bal}",
+        try:
+            response = await ai_client.images.generate(
+                model=MODEL_IMAGE,
+                prompt=message.text,
+                n=1,
             )
-        else:
-            logger.error(f"Все модели картинок выдали ошибку. Последняя: {last_error}")
+            if response.data and len(response.data) > 0:
+                image_url = response.data[0].url
+                await safe_delete(wait_msg)
+                (_, img_bal), _ = get_user(user_id)
+                await message.answer_photo(
+                    photo=image_url,
+                    caption=f"✅ Готово! Осталось картинок: {img_bal}",
+                )
+            else:
+                raise ValueError("API вернуло пустой ответ")
+        except Exception as e:
+            logger.error(f"Ошибка картинки: {e}")
             update_balance(user_id, img_delta=+1)
             await safe_delete(wait_msg)
-            await message.answer(
-                "⚠️ Не удалось сгенерировать картинку. Попробуй позже.")
+            await message.answer(f"⚠️ Ошибка API: {str(e)[:200]}")
         return
 
     # --- Текст ---
@@ -428,14 +387,12 @@ async def handle_ai_request(message: types.Message):
         await message.answer(
             "⚠️ Нейросеть временно недоступна. Попробуй ещё раз.")
 
-
 @dp.message()
 async def fallback(message: types.Message):
     await message.answer(
         "Пожалуйста, отправь текстовый запрос или выбери режим в меню 👇",
         reply_markup=main_kb,
     )
-
 
 # ---------- Запуск ----------
 async def main() -> None:
@@ -454,7 +411,6 @@ async def main() -> None:
     finally:
         await ai_client.close()
         await bot.session.close()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
