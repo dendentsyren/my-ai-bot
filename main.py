@@ -357,28 +357,21 @@ async def handle_ai_request(message: types.Message):
     mode = user_modes.get(user_id, "fast")
 
     # --- Картинки ---
-    if mode == "image":
-        wait_msg = await message.answer("🎨 Рисую картинку, подождите 10–15 секунд...")
-        success = False
-        image_url = None
-        last_error = None
-
-        for model_name in MODELS_IMAGE:
+    for model_name in MODELS_IMAGE:
             try:
                 response = await ai_client.images.generate(
                     model=model_name,
                     prompt=message.text,
                     n=1,
-                    
                 )
                 image_url = next(iter(response.data)).url
                 success = True
                 logger.info(f"Успешно сгенерировано через модель: {model_name}")
-                break  # Если получилось - выходим из цикла
+                break
             except Exception as e:
                 logger.warning(f"Модель {model_name} не сработала: {e}")
                 last_error = e
-                continue  # Пробуем следующую модель
+                continue
 
         if success and image_url:
             await safe_delete(wait_msg)
@@ -389,7 +382,7 @@ async def handle_ai_request(message: types.Message):
             )
         else:
             logger.error(f"Все модели картинок выдали ошибку. Последняя: {last_error}")
-            update_balance(user_id, img_delta=+1)  # откат баланса
+            update_balance(user_id, img_delta=+1)
             await safe_delete(wait_msg)
             await message.answer(
                 "⚠️ Не удалось сгенерировать картинку. Попробуй позже.")
