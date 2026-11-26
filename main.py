@@ -25,7 +25,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 BASE_URL = "https://api.proxyapi.ru/v1"
 
 MODEL_TEXT_FAST = "openai/gpt-6.2-sol"
-MODEL_TEXT_SMART = "anthropic/claude-sonnet-5.5"
+MODEL_TEXT_SMART = "anthropic/claude-3-haiku-20240307" # Заменили на стабильную
 MODEL_IMAGE = "openai/gpt-image-1.5"
 
 DB_PATH = "users.db"
@@ -345,7 +345,6 @@ async def handle_ai_request(message: types.Message):
             if response.data and len(response.data) > 0:
                 image_data = response.data[0]
                 
-                # Если API вернул ссылку (URL)
                 if image_data.url:
                     await safe_delete(wait_msg)
                     (_, img_bal), _ = get_user(user_id)
@@ -353,7 +352,6 @@ async def handle_ai_request(message: types.Message):
                         photo=image_data.url,
                         caption=f"✅ Готово! Осталось картинок: {img_bal}",
                     )
-                # Если API вернул Base64
                 elif image_data.b64_json:
                     photo_bytes = io.BytesIO(base64.b64decode(image_data.b64_json))
                     await safe_delete(wait_msg)
@@ -398,12 +396,11 @@ async def handle_ai_request(message: types.Message):
         answer_text = response.choices[0].message.content or "(пустой ответ)"
         await safe_delete(wait_msg)
         await safe_send_text(message, answer_text)
-    except Exception:
+    except Exception as e:
         logger.exception("text completion failed for user %s", user_id)
         update_balance(user_id, text_delta=+1)
         await safe_delete(wait_msg)
-        await message.answer(
-            "⚠️ Нейросеть временно недоступна. Попробуй ещё раз.")
+        await message.answer(f"⚠️ Ошибка текста: {str(e)[:200]}")
 
 @dp.message()
 async def fallback(message: types.Message):
