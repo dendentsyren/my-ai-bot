@@ -23,7 +23,12 @@ BASE_URL = "https://api.proxyapi.ru/v1"
 
 MODEL_TEXT_FAST = "openai/gpt-6.2-sol"
 MODEL_TEXT_SMART = "anthropic/claude-sonnet-5.5"
-MODEL_IMAGE = "dall-e-3"
+# Список моделей для картинок (от самой лучшей к запасным)
+MODELS_IMAGE = [
+    "openai/gpt-image-1.5",
+    "black-forest-labs/flux.2-klein-4b",
+    "qwen/qwen-image-2.1-turbo"
+]
 
 DB_PATH = "users.db"
 TG_TEXT_LIMIT = 4000  # с запасом от 4096
@@ -353,30 +358,38 @@ async def handle_ai_request(message: types.Message):
 
     # --- Картинки ---
     if mode == "image":
-        if not try_consume(user_id, "img"):
-            await message.answer(
-                "❌ Закончились генерации картинок. "
-                "Нажми «💎 Купить подписку» или «🎁 Бесплатные запросы».")
-            return
-
         wait_msg = await message.answer("🎨 Рисую картинку, подождите 10–15 секунд...")
-        try:
-            response = await ai_client.images.generate(
-                model=MODEL_IMAGE,
-                prompt=message.text,
-                n=1,
-                size="1024x1024",
-            )
-            image_url = next(iter(response.data)).url
+        success = False
+        image_url = None
+        last_error = None
+
+        for model_name in MODELS_IMAGE:
+            try:
+                response = await ai_client.images.generate(
+                    model=model_name,
+                    prompt=message.text,
+                    n=1,
+                    size="1024x1024",
+                )
+                image_url = next(iter(response.data)).url
+                success = True
+                logger.info(f"Успешно сгенерировано через модель: {model_name}")
+                break  # Если получилось - выходим из цикла
+            except Exception as e:
+                logger.warning(f"Модель {model_name} не сработала: {e}")
+                last_error = e
+                continue  # Пробуем следующую модель
+
+        if success and image_url:
             await safe_delete(wait_msg)
             (_, img_bal), _ = get_user(user_id)
             await message.answer_photo(
                 photo=image_url,
                 caption=f"✅ Готово! Осталось картинок: {img_bal}",
             )
-        except Exception:
-            logger.exception("image generation failed for user %s", user_id)
-            update_balance(user_id, img_delta=+1)  # откат
+        else:
+            logger.error(f"Все модели картинок выдали ошибку. Последняя: {last_error}")
+            update_balance(user_id, img_delta=+1)  # откат баланса
             await safe_delete(wait_msg)
             await message.answer(
                 "⚠️ Не удалось сгенерировать картинку. Попробуй позже.")
