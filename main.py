@@ -373,7 +373,7 @@ async def handle_ai_request(message: types.Message):
                 last_error = e
                 continue
 
-        if success and image_url:
+    if success and image_url:
             await safe_delete(wait_msg)
             (_, img_bal), _ = get_user(user_id)
             await message.answer_photo(
