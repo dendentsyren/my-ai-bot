@@ -25,9 +25,8 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 BASE_URL = "https://api.proxyapi.ru/v1"
 
 MODEL_TEXT_FAST = "openai/gpt-6.2-sol"
-# Меняем сложную модель на стабильную OpenAI, чтобы не было ошибок 400
 MODEL_TEXT_SMART = "openai/gpt-4o" 
-MODEL_IMAGE = "openai/gpt-image-1.5"
+MODEL_IMAGE = "dall-e-3"  # <-- Заменили на экономичную и стабильную модель
 
 DB_PATH = "users.db"
 TG_TEXT_LIMIT = 4000
