@@ -23,7 +23,7 @@ BASE_URL = "https://api.proxyapi.ru/v1"
 
 MODEL_TEXT_FAST = "openai/gpt-6.2-sol"
 MODEL_TEXT_SMART = "anthropic/claude-sonnet-5.5"
-MODEL_IMAGE = "openai/gpt-image-2.6-flare"
+MODEL_IMAGE = "dall-e-3"
 
 DB_PATH = "users.db"
 TG_TEXT_LIMIT = 4000  # с запасом от 4096
