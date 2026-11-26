@@ -28,6 +28,7 @@ BASE_URL = "https://api.proxyapi.ru/v1"
 MODEL_TEXT_FAST = "openai/gpt-6.2-sol"
 MODEL_TEXT_SMART = "openai/gpt-4o" 
 MODEL_IMAGE = "black-forest-labs/flux.2-klein-4b" 
+MODEL_VOICE = "whisper-1"
 
 DB_PATH = "users.db"
 TG_TEXT_LIMIT = 4000
@@ -145,7 +146,6 @@ buy_menu_kb = InlineKeyboardMarkup(
     ]
 )
 
-# ИСПРАВЛЕНО: Короткие названия, чтобы текст не обрезался
 packs_kb = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="Старт (200 ⭐)", callback_data="buy_pack_start")],
@@ -268,8 +268,9 @@ async def cmd_add_balance(message: types.Message):
 @dp.message(F.text == "✍️ Написать / Решить задачу")
 async def mode_fast(message: types.Message):
     user_modes[message.from_user.id] = "fast"
-    await message.answer("✍️ Режим *Быстрый текст / Учеба* включён. "
-                         "Напиши свой вопрос:", parse_mode="Markdown")
+    await message.answer("✍️ Режим *Быстрый текст / Учеба* включён.\n"
+                         "Напиши свой вопрос текстом или отправь голосовое сообщение.",
+                         parse_mode="Markdown")
 
 @dp.message(F.text == "🧠 Сложный анализ / Код")
 async def mode_smart(message: types.Message):
@@ -417,7 +418,7 @@ async def process_successful_payment(message: types.Message):
         update_balance(user_id, text_delta=10)
         await message.answer("✅ Оплата прошла! Тебе начислено *10 текстовых запросов*.")
 
-
+# ---------- ОБРАБОТКА ТЕКСТА / КАРТИНОК ----------
 @dp.message(F.text & ~F.text.startswith("/"))
 async def handle_ai_request(message: types.Message):
     user_id = message.from_user.id
@@ -499,10 +500,62 @@ async def handle_ai_request(message: types.Message):
         await safe_delete(wait_msg)
         await message.answer(f"⚠️ Ошибка текста: {str(e)[:200]}")
 
+# ---------- ОБРАБОТКА ГОЛОСА (WHISPER) ----------
+@dp.message(F.voice)
+async def handle_voice(message: types.Message):
+    user_id = message.from_user.id
+    
+    # Голосовое сообщение списывает 2 запроса (защита от длинных записей)
+    cost = 2
+    if not try_consume(user_id, "text", amount=cost):
+        await message.answer(
+            "❌ Закончились текстовые запросы (для голоса нужно 2). "
+            "Нажми «💎 Купить подписку» или «🎁 Бесплатные запросы».")
+        return
+
+    wait_msg = await message.answer("🎤 Распознаю голосовое сообщение...")
+    
+    try:
+        # Скачиваем голосовой файл
+        file_info = await bot.get_file(message.voice.file_id)
+        file_bytes = await bot.download_file(file_info.file_path)
+        
+        # Отправляем в Whisper
+        transcript = await ai_client.audio.transcriptions.create(
+            model=MODEL_VOICE,
+            file=("voice.ogg", file_bytes.read()),
+        )
+        
+        text_query = transcript.text
+        if not text_query:
+            raise ValueError("Не удалось распознать речь")
+            
+        await wait_msg.edit_text(f"🗣️ *Вы сказали:* {text_query}\n\n⏳ Думаю над ответом...", parse_mode="Markdown")
+        
+        # Отправляем распознанный текст в нейросеть
+        response = await ai_client.chat.completions.create(
+            model=MODEL_TEXT_FAST,
+            messages=[
+                {"role": "system", "content": "Ты полезный ИИ-помощник. Отвечай чётко и на русском."},
+                {"role": "user", "content": text_query}
+            ],
+            max_tokens=2000,
+        )
+        
+        answer_text = response.choices[0].message.content or "(пустой ответ)"
+        await safe_delete(wait_msg)
+        await safe_send_text(message, answer_text)
+        
+    except Exception as e:
+        logger.error(f"Ошибка Voice: {e}")
+        update_balance(user_id, text_delta=cost) # Возврат баланса
+        await safe_delete(wait_msg)
+        await message.answer(f"⚠️ Ошибка распознавания голоса: {str(e)[:200]}")
+
 @dp.message()
 async def fallback(message: types.Message):
     await message.answer(
-        "Пожалуйста, отправь текстовый запрос или выбери режим в меню 👇",
+        "Пожалуйста, отправь текстовый запрос, голосовое сообщение или выбери режим в меню 👇",
         reply_markup=main_kb,
     )
 
