@@ -26,7 +26,8 @@ BASE_URL = "https://api.proxyapi.ru/v1"
 
 MODEL_TEXT_FAST = "openai/gpt-6.2-sol"
 MODEL_TEXT_SMART = "openai/gpt-4o" 
-MODEL_IMAGE = "dall-e-3"
+# Используем модель Black Forest Labs, которая точно работает через ProxyAPI
+MODEL_IMAGE = "black-forest-labs/flux.2-klein-4b" 
 
 DB_PATH = "users.db"
 TG_TEXT_LIMIT = 4000
@@ -337,7 +338,7 @@ async def handle_ai_request(message: types.Message):
 
         wait_msg = await message.answer("🎨 Рисую картинку, подождите 10–15 секунд...")
         try:
-            # Убираем все лишние параметры, оставляя только model и prompt
+            # Отправляем только model и prompt, как требует документация ProxyAPI
             response = await ai_client.images.generate(
                 model=MODEL_IMAGE,
                 prompt=message.text,
