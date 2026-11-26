@@ -6,7 +6,7 @@ import html
 import base64
 import io
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart, Command
@@ -51,7 +51,6 @@ def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
-    # Добавляем новые поля в таблицу
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -60,28 +59,43 @@ def get_conn() -> sqlite3.Connection:
             referred_by INTEGER DEFAULT 0,
             has_made_request INTEGER DEFAULT 0,
             ref_bonus_paid INTEGER DEFAULT 0,
-            last_bonus_date TEXT DEFAULT ''
+            last_bonus_time TEXT DEFAULT ''
         )
     """)
     conn.commit()
     return conn
 
 def get_user(user_id: int, ref_id: int = 0) -> tuple[tuple[int, int], str]:
-    """Возвращает баланс и статус (new, daily_bonus, ref_link, existing)."""
+    """Возвращает баланс и статус."""
     with closing(get_conn()) as conn:
         cur = conn.execute(
-            "SELECT text_balance, img_balance, last_bonus_date FROM users WHERE user_id = ?",
+            "SELECT text_balance, img_balance, last_bonus_time FROM users WHERE user_id = ?",
             (user_id,),
         )
         row = cur.fetchone()
-        today = datetime.now().strftime("%Y-%m-%d")
+        now = datetime.now()
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
         
         if row:
-            # Существующий пользователь - проверяем ежедневный бонус
-            if row[2] != today:
-                conn.execute("UPDATE users SET text_balance = text_balance + 1, last_bonus_date = ? WHERE user_id = ?", (today, user_id))
+            last_time_str = row[2]
+            give_bonus = False
+            
+            if not last_time_str:
+                give_bonus = True
+            else:
+                try:
+                    last_time = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S")
+                    # Если прошло больше 24 часов или изменился день
+                    if (now - last_time) > timedelta(hours=24) or now.date() > last_time.date():
+                        give_bonus = True
+                except ValueError:
+                    give_bonus = True
+
+            if give_bonus:
+                conn.execute("UPDATE users SET text_balance = text_balance + 1, last_bonus_time = ? WHERE user_id = ?", (now_str, user_id))
                 conn.commit()
                 return (row[0] + 1, row[1]), "daily_bonus"
+            
             return (row[0], row[1]), "existing"
 
         # Новый пользователь
@@ -92,9 +106,9 @@ def get_user(user_id: int, ref_id: int = 0) -> tuple[tuple[int, int], str]:
                 valid_ref = ref_id
 
         conn.execute(
-            "INSERT INTO users (user_id, text_balance, img_balance, referred_by, last_bonus_date) "
+            "INSERT INTO users (user_id, text_balance, img_balance, referred_by, last_bonus_time) "
             "VALUES (?, 5, 1, ?, ?)",
-            (user_id, valid_ref, today),
+            (user_id, valid_ref, now_str),
         )
         conn.commit()
         return (5, 1), "new"
@@ -118,15 +132,12 @@ def try_consume(user_id: int, kind: str, amount: int = 1) -> bool:
         return cur.rowcount > 0
 
 def check_and_pay_referral(user_id: int):
-    """Проверяет реферальный бонус при первом запросе."""
     with closing(get_conn()) as conn:
         cur = conn.execute("SELECT referred_by, has_made_request, ref_bonus_paid FROM users WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
         if row and row[0] != 0 and row[1] == 0 and row[2] == 0:
             ref_id = row[0]
-            # Отмечаем, что запрос сделан и бонус выплачен
             conn.execute("UPDATE users SET has_made_request = 1, ref_bonus_paid = 1 WHERE user_id = ?", (user_id,))
-            # Начисляем бонус пригласившему
             conn.execute("UPDATE users SET text_balance = text_balance + 5, img_balance = img_balance + 1 WHERE user_id = ?", (ref_id,))
             conn.commit()
             return ref_id
@@ -333,7 +344,6 @@ async def handle_text(message: types.Message):
     user_id = message.from_user.id
     mode = user_modes.get(user_id, "fast")
 
-    # Проверка реферала при первом запросе
     ref_paid_to = check_and_pay_referral(user_id)
     if ref_paid_to:
         try: await bot.send_message(ref_paid_to, "🤝 Твой друг сделал первый запрос! Тебе начислено *+5 текстов* и *+1 картинка*.", parse_mode="Markdown")
@@ -378,7 +388,6 @@ async def handle_voice(message: types.Message):
         await message.answer("❌ Закончились запросы (для голоса нужно 2).")
         return
 
-    # Проверка реферала при первом запросе
     ref_paid_to = check_and_pay_referral(user_id)
     if ref_paid_to:
         try: await bot.send_message(ref_paid_to, "🤝 Твой друг сделал первый запрос! Тебе начислено *+5 текстов* и *+1 картинка*.", parse_mode="Markdown")
@@ -406,7 +415,7 @@ async def fallback(message: types.Message):
 
 # ---------- Запуск ----------
 async def main() -> None:
-    with closing(get_conn()) as conn: pass # Инициализация
+    with closing(get_conn()) as conn: pass
     global bot_username
     try:
         me = await bot.get_me()
