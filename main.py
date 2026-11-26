@@ -138,7 +138,6 @@ main_kb = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
-# Меню выбора: Пакеты или Поштучно
 buy_menu_kb = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="📦 Купить пакет (выгодно)", callback_data="menu_packs")],
@@ -146,17 +145,16 @@ buy_menu_kb = InlineKeyboardMarkup(
     ]
 )
 
-# Меню пакетов
+# ИСПРАВЛЕНО: Короткие названия, чтобы текст не обрезался
 packs_kb = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="Старт: 100 текстов + 10 картинок (200 ⭐)", callback_data="buy_pack_start")],
-        [InlineKeyboardButton(text="Оптимальный: 300 текстов + 35 картинок (550 ⭐)", callback_data="buy_pack_opt")],
-        [InlineKeyboardButton(text="Профи: 1000 текстов + 80 картинок (1500 ⭐)", callback_data="buy_pack_pro")],
+        [InlineKeyboardButton(text="Старт (200 ⭐)", callback_data="buy_pack_start")],
+        [InlineKeyboardButton(text="Оптимальный (550 ⭐)", callback_data="buy_pack_opt")],
+        [InlineKeyboardButton(text="Профи (1500 ⭐)", callback_data="buy_pack_pro")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_back")]
     ]
 )
 
-# Меню поштучно
 single_kb = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="1 Генерация картинки (15 ⭐)", callback_data="buy_single_img")],
@@ -470,10 +468,8 @@ async def handle_ai_request(message: types.Message):
         return
 
     # --- Текст ---
-    # Определяем стоимость: 1 для обычного, 5 для сложного
     cost = 5 if mode == "smart" else 1
     
-    # Пытаемся списать нужное количество
     if not try_consume(user_id, "text", amount=cost):
         await message.answer(
             f"❌ Недостаточно текстовых запросов (нужно {cost}). "
@@ -499,7 +495,7 @@ async def handle_ai_request(message: types.Message):
         await safe_send_text(message, answer_text)
     except Exception as e:
         logger.exception("text completion failed for user %s", user_id)
-        update_balance(user_id, text_delta=cost) # Возвращаем списанное при ошибке
+        update_balance(user_id, text_delta=cost)
         await safe_delete(wait_msg)
         await message.answer(f"⚠️ Ошибка текста: {str(e)[:200]}")
 
