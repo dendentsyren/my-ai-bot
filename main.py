@@ -23,7 +23,8 @@ BASE_URL = "https://api.proxyapi.ru/v1"
 
 MODEL_TEXT_FAST = "openai/gpt-6.2-sol"
 MODEL_TEXT_SMART = "anthropic/claude-sonnet-5.5"
-# Список моделей для картинок (от самой лучшей к запасным)
+
+# Модели для картинок (попробует по очереди, пока одна не сработает)
 MODELS_IMAGE = [
     "openai/gpt-image-1.5",
     "black-forest-labs/flux.2-klein-4b",
@@ -31,7 +32,7 @@ MODELS_IMAGE = [
 ]
 
 DB_PATH = "users.db"
-TG_TEXT_LIMIT = 4000  # с запасом от 4096
+TG_TEXT_LIMIT = 4000
 
 logging.basicConfig(
     level=logging.INFO,
@@ -72,7 +73,6 @@ def init_db() -> None:
 
 
 def get_user(user_id: int, ref_id: int = 0) -> tuple[tuple[int, int], bool]:
-    """Возвращает ((text_balance, img_balance), is_new)."""
     with closing(get_conn()) as conn:
         cur = conn.execute(
             "SELECT text_balance, img_balance FROM users WHERE user_id = ?",
@@ -82,7 +82,6 @@ def get_user(user_id: int, ref_id: int = 0) -> tuple[tuple[int, int], bool]:
         if row:
             return (row[0], row[1]), False
 
-        # Проверяем, существует ли реферер, прежде чем начислять ему бонус
         valid_ref = 0
         if ref_id and ref_id != user_id:
             cur = conn.execute("SELECT 1 FROM users WHERE user_id = ?", (ref_id,))
@@ -115,7 +114,6 @@ def update_balance(user_id: int, text_delta: int = 0, img_delta: int = 0) -> Non
 
 
 def try_consume(user_id: int, kind: str) -> bool:
-    """Атомарно списывает 1 единицу баланса. True — если списано."""
     col = "text_balance" if kind == "text" else "img_balance"
     with closing(get_conn()) as conn:
         cur = conn.execute(
@@ -170,7 +168,6 @@ def split_text(text: str, limit: int = TG_TEXT_LIMIT) -> list[str]:
 
 
 async def safe_send_text(message: types.Message, text: str) -> None:
-    """Отправляет длинный текст частями, без падения на markdown."""
     for chunk in split_text(text):
         try:
             await message.answer(chunk)
@@ -227,7 +224,6 @@ async def cmd_start(message: types.Message):
 @dp.message(Command("admin"))
 async def cmd_admin(message: types.Message):
     if not is_admin(message.from_user.id):
-        # Не палим наличие команды обычным юзерам
         return
     total_users, total_texts, total_imgs = get_stats()
     await message.answer(
@@ -257,7 +253,7 @@ async def cmd_add_balance(message: types.Message):
         await message.answer("⚠️ ID и числа должны быть целыми.")
         return
 
-    get_user(target_id)  # создаём, если нет
+    get_user(target_id)
     update_balance(target_id, text_delta=add_t, img_delta=add_i)
     await message.answer(
         f"✅ Пользователю `{target_id}` начислено "
@@ -357,23 +353,36 @@ async def handle_ai_request(message: types.Message):
     mode = user_modes.get(user_id, "fast")
 
     # --- Картинки ---
-    for model_name in MODELS_IMAGE:
+    if mode == "image":
+        if not try_consume(user_id, "img"):
+            await message.answer(
+                "❌ Закончились генерации картинок. "
+                "Нажми «💎 Купить подписку» или «🎁 Бесплатные запросы».")
+            return
+
+        wait_msg = await message.answer("🎨 Рисую картинку, подождите 10–15 секунд...")
+        success = False
+        image_url = None
+        last_error = None
+
+        for model_name in MODELS_IMAGE:
             try:
                 response = await ai_client.images.generate(
                     model=model_name,
                     prompt=message.text,
                     n=1,
                 )
-                image_url = next(iter(response.data)).url
-                success = True
-                logger.info(f"Успешно сгенерировано через модель: {model_name}")
-                break
+                if response.data and len(response.data) > 0:
+                    image_url = response.data[0].url
+                    success = True
+                    logger.info(f"Успешно сгенерировано через модель: {model_name}")
+                    break
             except Exception as e:
                 logger.warning(f"Модель {model_name} не сработала: {e}")
                 last_error = e
                 continue
 
-    if success and image_url:
+        if success and image_url:
             await safe_delete(wait_msg)
             (_, img_bal), _ = get_user(user_id)
             await message.answer_photo(
@@ -414,7 +423,7 @@ async def handle_ai_request(message: types.Message):
         await safe_send_text(message, answer_text)
     except Exception:
         logger.exception("text completion failed for user %s", user_id)
-        update_balance(user_id, text_delta=+1)  # откат
+        update_balance(user_id, text_delta=+1)
         await safe_delete(wait_msg)
         await message.answer(
             "⚠️ Нейросеть временно недоступна. Попробуй ещё раз.")
