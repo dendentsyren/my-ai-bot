@@ -12,7 +12,8 @@ from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton,
-    BufferedInputFile
+    BufferedInputFile,
+    LabeledPrice, PreCheckoutQuery
 )
 from aiogram.exceptions import TelegramBadRequest
 from openai import AsyncOpenAI
@@ -26,7 +27,6 @@ BASE_URL = "https://api.proxyapi.ru/v1"
 
 MODEL_TEXT_FAST = "openai/gpt-6.2-sol"
 MODEL_TEXT_SMART = "openai/gpt-4o" 
-# Используем модель Black Forest Labs, которая точно работает через ProxyAPI
 MODEL_IMAGE = "black-forest-labs/flux.2-klein-4b" 
 
 DB_PATH = "users.db"
@@ -106,13 +106,13 @@ def update_balance(user_id: int, text_delta: int = 0, img_delta: int = 0) -> Non
         )
         conn.commit()
 
-def try_consume(user_id: int, kind: str) -> bool:
+def try_consume(user_id: int, kind: str, amount: int = 1) -> bool:
     col = "text_balance" if kind == "text" else "img_balance"
     with closing(get_conn()) as conn:
         cur = conn.execute(
-            f"UPDATE users SET {col} = {col} - 1 "
-            f"WHERE user_id = ? AND {col} > 0",
-            (user_id,),
+            f"UPDATE users SET {col} = {col} - ? "
+            f"WHERE user_id = ? AND {col} >= ?",
+            (amount, user_id, amount),
         )
         conn.commit()
         return cur.rowcount > 0
@@ -138,17 +138,30 @@ main_kb = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 
-tariffs_kb = InlineKeyboardMarkup(
+# Меню выбора: Пакеты или Поштучно
+buy_menu_kb = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(
-            text="Старт: 100 текстов + 10 картинок (290 ₽)",
-            callback_data="buy_start")],
-        [InlineKeyboardButton(
-            text="Оптимальный: 300 текстов + 35 картинок (590 ₽)",
-            callback_data="buy_opt")],
-        [InlineKeyboardButton(
-            text="Профи: 1000 текстов + 80 картинок (1190 ₽)",
-            callback_data="buy_pro")],
+        [InlineKeyboardButton(text="📦 Купить пакет (выгодно)", callback_data="menu_packs")],
+        [InlineKeyboardButton(text="🛒 Купить поштучно", callback_data="menu_single")]
+    ]
+)
+
+# Меню пакетов
+packs_kb = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="Старт: 100 текстов + 10 картинок (200 ⭐)", callback_data="buy_pack_start")],
+        [InlineKeyboardButton(text="Оптимальный: 300 текстов + 35 картинок (550 ⭐)", callback_data="buy_pack_opt")],
+        [InlineKeyboardButton(text="Профи: 1000 текстов + 80 картинок (1500 ⭐)", callback_data="buy_pack_pro")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_back")]
+    ]
+)
+
+# Меню поштучно
+single_kb = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="1 Генерация картинки (15 ⭐)", callback_data="buy_single_img")],
+        [InlineKeyboardButton(text="10 Текстовых запросов (10 ⭐)", callback_data="buy_single_text")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_back")]
     ]
 )
 
@@ -263,8 +276,9 @@ async def mode_fast(message: types.Message):
 @dp.message(F.text == "🧠 Сложный анализ / Код")
 async def mode_smart(message: types.Message):
     user_modes[message.from_user.id] = "smart"
-    await message.answer("🧠 Режим *Глубокий анализ / Код (GPT-4o)* включён. "
-                         "Опиши задачу:", parse_mode="Markdown")
+    await message.answer("🧠 Режим *Глубокий анализ / Код (GPT-4o)* включён.\n"
+                         "⚠️ Внимание: этот режим списывает *5 запросов* за один ответ.",
+                         parse_mode="Markdown")
 
 @dp.message(F.text == "🎨 Создать картинку")
 async def mode_image(message: types.Message):
@@ -306,22 +320,105 @@ async def show_referral(message: types.Message):
 @dp.message(F.text == "💎 Купить подписку")
 async def show_tariffs(message: types.Message):
     await message.answer(
-        "💎 *Выбери подходящий пакет запросов:*\n\n"
-        "Оплата по СБП и картами РФ.",
-        reply_markup=tariffs_kb,
+        "💎 *Выбери способ пополнения:*\n\n"
+        "Ты можешь купить выгодный пакет запросов или приобрести их поштучно.",
+        reply_markup=buy_menu_kb,
         parse_mode="Markdown",
     )
 
-@dp.callback_query(F.data.startswith("buy_"))
-async def process_buy(callback: types.CallbackQuery):
-    try:
-        await callback.message.answer(
-            "💳 Для моментального пополнения напишите администратору "
-            f"и укажите ваш ID: `{callback.from_user.id}`",
-            parse_mode="Markdown",
-        )
-    finally:
-        await callback.answer()
+@dp.callback_query(F.data == "menu_packs")
+async def cb_menu_packs(callback: types.CallbackQuery):
+    await callback.message.edit_text(
+        "📦 *Выбери подходящий пакет запросов:*\n\n"
+        "Оплата происходит в Telegram Stars (⭐).",
+        reply_markup=packs_kb,
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "menu_single")
+async def cb_menu_single(callback: types.CallbackQuery):
+    await callback.message.edit_text(
+        "🛒 *Купить поштучно:*\n\n"
+        "Если нужно срочно сгенерировать картинку или написать пару текстов.",
+        reply_markup=single_kb,
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "menu_back")
+async def cb_menu_back(callback: types.CallbackQuery):
+    await callback.message.edit_text(
+        "💎 *Выбери способ пополнения:*\n\n"
+        "Ты можешь купить выгодный пакет запросов или приобрести их поштучно.",
+        reply_markup=buy_menu_kb,
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+# ---------- ОПЛАТА ЗВЕЗДАМИ (STARS) ----------
+
+async def send_invoice(chat_id: int, title: str, description: str, payload: str, stars_amount: int):
+    await bot.send_invoice(
+        chat_id=chat_id,
+        title=title,
+        description=description,
+        payload=payload,
+        provider_token="",
+        currency="XTR",
+        prices=[LabeledPrice(label=title, amount=stars_amount)],
+    )
+
+@dp.callback_query(F.data == "buy_pack_start")
+async def cb_buy_pack_start(callback: types.CallbackQuery):
+    await send_invoice(callback.message.chat.id, "Тариф Старт", "100 текстов + 10 картинок", "pack_start", 200)
+    await callback.answer()
+
+@dp.callback_query(F.data == "buy_pack_opt")
+async def cb_buy_pack_opt(callback: types.CallbackQuery):
+    await send_invoice(callback.message.chat.id, "Тариф Оптимальный", "300 текстов + 35 картинок", "pack_opt", 550)
+    await callback.answer()
+
+@dp.callback_query(F.data == "buy_pack_pro")
+async def cb_buy_pack_pro(callback: types.CallbackQuery):
+    await send_invoice(callback.message.chat.id, "Тариф Профи", "1000 текстов + 80 картинок", "pack_pro", 1500)
+    await callback.answer()
+
+@dp.callback_query(F.data == "buy_single_img")
+async def cb_buy_single_img(callback: types.CallbackQuery):
+    await send_invoice(callback.message.chat.id, "1 Генерация картинки", "Одна генерация нейросети", "single_img", 15)
+    await callback.answer()
+
+@dp.callback_query(F.data == "buy_single_text")
+async def cb_buy_single_text(callback: types.CallbackQuery):
+    await send_invoice(callback.message.chat.id, "10 Текстовых запросов", "Пакет из 10 текстовых запросов", "single_text", 10)
+    await callback.answer()
+
+@dp.pre_checkout_query()
+async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+@dp.message(F.successful_payment)
+async def process_successful_payment(message: types.Message):
+    payload = message.successful_payment.invoice_payload
+    user_id = message.from_user.id
+
+    if payload == "pack_start":
+        update_balance(user_id, text_delta=100, img_delta=10)
+        await message.answer("✅ Оплата прошла! Тебе начислено *100 текстов* и *10 картинок*.")
+    elif payload == "pack_opt":
+        update_balance(user_id, text_delta=300, img_delta=35)
+        await message.answer("✅ Оплата прошла! Тебе начислено *300 текстов* и *35 картинок*.")
+    elif payload == "pack_pro":
+        update_balance(user_id, text_delta=1000, img_delta=80)
+        await message.answer("✅ Оплата прошла! Тебе начислено *1000 текстов* и *80 картинок*.")
+    elif payload == "single_img":
+        update_balance(user_id, img_delta=1)
+        await message.answer("✅ Оплата прошла! Тебе начислена *1 генерация картинки*.")
+    elif payload == "single_text":
+        update_balance(user_id, text_delta=10)
+        await message.answer("✅ Оплата прошла! Тебе начислено *10 текстовых запросов*.")
+
 
 @dp.message(F.text & ~F.text.startswith("/"))
 async def handle_ai_request(message: types.Message):
@@ -338,7 +435,6 @@ async def handle_ai_request(message: types.Message):
 
         wait_msg = await message.answer("🎨 Рисую картинку, подождите 10–15 секунд...")
         try:
-            # Отправляем только model и prompt, как требует документация ProxyAPI
             response = await ai_client.images.generate(
                 model=MODEL_IMAGE,
                 prompt=message.text,
@@ -374,9 +470,13 @@ async def handle_ai_request(message: types.Message):
         return
 
     # --- Текст ---
-    if not try_consume(user_id, "text"):
+    # Определяем стоимость: 1 для обычного, 5 для сложного
+    cost = 5 if mode == "smart" else 1
+    
+    # Пытаемся списать нужное количество
+    if not try_consume(user_id, "text", amount=cost):
         await message.answer(
-            "❌ Закончились текстовые запросы. "
+            f"❌ Недостаточно текстовых запросов (нужно {cost}). "
             "Нажми «💎 Купить подписку» или «🎁 Бесплатные запросы».")
         return
 
@@ -399,7 +499,7 @@ async def handle_ai_request(message: types.Message):
         await safe_send_text(message, answer_text)
     except Exception as e:
         logger.exception("text completion failed for user %s", user_id)
-        update_balance(user_id, text_delta=+1)
+        update_balance(user_id, text_delta=cost) # Возвращаем списанное при ошибке
         await safe_delete(wait_msg)
         await message.answer(f"⚠️ Ошибка текста: {str(e)[:200]}")
 
