@@ -337,7 +337,7 @@ async def handle_ai_request(message: types.Message):
 
         wait_msg = await message.answer("🎨 Рисую картинку, подождите 10–15 секунд...")
         try:
-            # Для DALL-E 3 убран параметр n=1, чтобы не было ошибки 400
+            # Убираем все лишние параметры, оставляя только model и prompt
             response = await ai_client.images.generate(
                 model=MODEL_IMAGE,
                 prompt=message.text,
