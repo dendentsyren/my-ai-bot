@@ -26,7 +26,7 @@ BASE_URL = "https://api.proxyapi.ru/v1"
 
 MODEL_TEXT_FAST = "openai/gpt-6.2-sol"
 MODEL_TEXT_SMART = "openai/gpt-4o" 
-MODEL_IMAGE = "dall-e-3"  # <-- Заменили на экономичную и стабильную модель
+MODEL_IMAGE = "dall-e-3"
 
 DB_PATH = "users.db"
 TG_TEXT_LIMIT = 4000
@@ -337,10 +337,10 @@ async def handle_ai_request(message: types.Message):
 
         wait_msg = await message.answer("🎨 Рисую картинку, подождите 10–15 секунд...")
         try:
+            # Для DALL-E 3 убран параметр n=1, чтобы не было ошибки 400
             response = await ai_client.images.generate(
                 model=MODEL_IMAGE,
                 prompt=message.text,
-                n=1,
             )
             if response.data and len(response.data) > 0:
                 image_data = response.data[0]
