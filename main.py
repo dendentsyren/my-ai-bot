@@ -369,7 +369,7 @@ async def handle_ai_request(message: types.Message):
                     model=model_name,
                     prompt=message.text,
                     n=1,
-                    size="1024x1024",
+                    
                 )
                 image_url = next(iter(response.data)).url
                 success = True
