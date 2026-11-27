@@ -6,7 +6,7 @@ import html
 import base64
 import io
 from contextlib import closing
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart, Command
@@ -51,7 +51,6 @@ def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
-    # Создаем таблицу с полем для времени бонуса
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -59,47 +58,23 @@ def get_conn() -> sqlite3.Connection:
             img_balance INTEGER DEFAULT 1,
             referred_by INTEGER DEFAULT 0,
             has_made_request INTEGER DEFAULT 0,
-            ref_bonus_paid INTEGER DEFAULT 0,
-            last_bonus_time TEXT DEFAULT ''
+            ref_bonus_paid INTEGER DEFAULT 0
         )
     """)
     conn.commit()
     return conn
 
 def get_user(user_id: int, ref_id: int = 0) -> tuple[tuple[int, int], str]:
-    """Возвращает баланс и статус (daily_bonus, new, existing)."""
     with closing(get_conn()) as conn:
         cur = conn.execute(
-            "SELECT text_balance, img_balance, last_bonus_time FROM users WHERE user_id = ?",
+            "SELECT text_balance, img_balance FROM users WHERE user_id = ?",
             (user_id,),
         )
         row = cur.fetchone()
-        now = datetime.now()
-        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
         
         if row:
-            last_time_str = row[2]
-            give_bonus = False
-            
-            if not last_time_str:
-                give_bonus = True
-            else:
-                try:
-                    last_time = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S")
-                    # Бонус раз в 24 часа
-                    if (now - last_time) > timedelta(hours=24):
-                        give_bonus = True
-                except ValueError:
-                    give_bonus = True
-
-            if give_bonus:
-                conn.execute("UPDATE users SET text_balance = text_balance + 1, last_bonus_time = ? WHERE user_id = ?", (now_str, user_id))
-                conn.commit()
-                return (row[0] + 1, row[1]), "daily_bonus"
-            
             return (row[0], row[1]), "existing"
 
-        # Новый пользователь
         valid_ref = 0
         if ref_id and ref_id != user_id:
             cur = conn.execute("SELECT 1 FROM users WHERE user_id = ?", (ref_id,))
@@ -107,9 +82,9 @@ def get_user(user_id: int, ref_id: int = 0) -> tuple[tuple[int, int], str]:
                 valid_ref = ref_id
 
         conn.execute(
-            "INSERT INTO users (user_id, text_balance, img_balance, referred_by, last_bonus_time) "
-            "VALUES (?, 5, 1, ?, ?)",
-            (user_id, valid_ref, now_str),
+            "INSERT INTO users (user_id, text_balance, img_balance, referred_by) "
+            "VALUES (?, 5, 1, ?)",
+            (user_id, valid_ref),
         )
         conn.commit()
         return (5, 1), "new"
@@ -199,16 +174,15 @@ async def cmd_start(message: types.Message):
     (text_bal, img_bal), status = get_user(message.from_user.id, ref_id)
     user_modes[message.from_user.id] = "fast"
 
-    bonus_text = ""
-    if status == "daily_bonus":
-        bonus_text = "\n\n🎁 *Ежедневный бонус:* +1 текстовый запрос!"
-    elif status == "new" and ref_id and ref_id != message.from_user.id:
-        bonus_text = "\n\n🤝 *Вы пришли по ссылке друга!* Сделайте первый запрос, и он получит бонус."
+    # ПРИНУДИТЕЛЬНЫЙ БОНУС (ДЛЯ ТЕСТА)
+    bonus_text = "\n\n🎁 *Тестовый бонус:* +1 запрос!"
+    update_balance(message.from_user.id, text_delta=1)
+    new_balance = text_bal + 1
 
     await message.answer(
         "👋 *Привет! Я твой универсальный ИИ-помощник.*\n\n"
         "Здесь собраны лучшие нейросети мира — *без зарубежных карт и сложных настроек*.\n\n"
-        f"🎁 Твой баланс: *{text_bal} текстовых запросов* и *{img_bal} генераций картинок*."
+        f"🎁 Твой баланс: *{new_balance} текстовых запросов* и *{img_bal} генераций картинок*."
         f"{bonus_text}\n\n"
         "👇 Выбери режим в меню ниже и просто напиши свой запрос:",
         reply_markup=main_kb, parse_mode="Markdown",
@@ -271,11 +245,10 @@ async def mode_image(message: types.Message):
 @dp.message(F.text == "👤 Мой профиль / Баланс")
 async def show_profile(message: types.Message):
     (text_bal, img_bal), status = get_user(message.from_user.id)
-    bonus_text = "\n\n🎁 *Ежедневный бонус:* +1 запрос!" if status == "daily_bonus" else ""
     await message.answer(
         f"👤 *Профиль (ID: `{message.from_user.id}`)*\n\n"
         f"💬 Текстовых запросов: *{text_bal}*\n"
-        f"🎨 Картинок: *{img_bal}*{bonus_text}",
+        f"🎨 Картинок: *{img_bal}*",
         parse_mode="Markdown",
     )
 
