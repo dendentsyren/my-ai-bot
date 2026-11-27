@@ -118,9 +118,20 @@ def get_user(user_id: int, ref_id: int = 0) -> tuple[tuple[int, int], str]:
 
 def update_balance(user_id: int, text_delta: int = 0, img_delta: int = 0) -> None:
     with closing(get_conn()) as conn:
+        # Защита от ухода в минус
+        if text_delta < 0:
+            conn.execute(
+                "UPDATE users SET text_balance = MAX(0, text_balance + ?) WHERE user_id = ?",
+                (text_delta, user_id),
+            )
+        if img_delta < 0:
+            conn.execute(
+                "UPDATE users SET img_balance = MAX(0, img_balance + ?) WHERE user_id = ?",
+                (img_delta, user_id),
+            )
         conn.execute(
             "UPDATE users SET text_balance = text_balance + ?, img_balance = img_balance + ? WHERE user_id = ?",
-            (text_delta, img_delta, user_id),
+            (text_delta if text_delta > 0 else 0, img_delta if img_delta > 0 else 0, user_id),
         )
         conn.commit()
 
@@ -373,7 +384,7 @@ async def mode_image(message: types.Message):
     (_, img_bal), _ = get_user(message.from_user.id)
     if img_bal <= 0:
         await message.answer("❌ Закончились генерации картинок.")
-        user_modes[message.from_user.id] = "fast" # <--- ДОБАВЛЕНО: Авто-сброс режима
+        user_modes[message.from_user.id] = "fast"
         return
     user_modes[message.from_user.id] = "image"
     await message.answer("🎨 Режим *Генерация картинок* включён. Опиши, что нарисовать:", parse_mode="Markdown")
@@ -453,7 +464,6 @@ async def process_successful_payment(message: types.Message):
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
     
-    # Проверка на бан
     with closing(get_conn()) as conn:
         cur = conn.execute("SELECT is_banned FROM users WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
@@ -461,7 +471,6 @@ async def handle_text(message: types.Message):
             await message.answer("⛔ Вы заблокированы в этом боте.")
             return
 
-    # Проверка на ежедневный бонус перед любым текстовым запросом
     (text_bal, img_bal), status = get_user(user_id)
     if status == "daily_bonus":
         await message.answer("🎁 *Ежедневный бонус:* Тебе начислен +1 текстовый запрос!", parse_mode="Markdown")
@@ -476,7 +485,7 @@ async def handle_text(message: types.Message):
     if mode == "image":
         if not try_consume(user_id, "img"): 
             await message.answer("❌ Закончились генерации.")
-            user_modes[user_id] = "fast" # <--- ДОБАВЛЕНО: Авто-сброс режима
+            user_modes[user_id] = "fast" 
             return
         
         wait_msg = await message.answer("🎨 Рисую...")
@@ -522,7 +531,6 @@ async def handle_text(message: types.Message):
 async def handle_voice(message: types.Message):
     user_id = message.from_user.id
     
-    # Проверка на бан
     with closing(get_conn()) as conn:
         cur = conn.execute("SELECT is_banned FROM users WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
