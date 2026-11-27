@@ -59,14 +59,18 @@ def get_conn() -> sqlite3.Connection:
             referred_by INTEGER DEFAULT 0,
             has_made_request INTEGER DEFAULT 0,
             ref_bonus_paid INTEGER DEFAULT 0,
-            last_bonus_time TEXT DEFAULT ''
+            last_bonus_time TEXT DEFAULT '',
+            is_banned INTEGER DEFAULT 0
         )
     """)
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     return conn
 
 def get_user(user_id: int, ref_id: int = 0) -> tuple[tuple[int, int], str]:
-    """Возвращает баланс и статус (daily_bonus, new, existing)."""
     with closing(get_conn()) as conn:
         cur = conn.execute(
             "SELECT text_balance, img_balance, last_bonus_time FROM users WHERE user_id = ?",
@@ -85,7 +89,6 @@ def get_user(user_id: int, ref_id: int = 0) -> tuple[tuple[int, int], str]:
             else:
                 try:
                     last_time = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S")
-                    # Бонус раз в 24 часа
                     if (now - last_time) > timedelta(hours=24):
                         give_bonus = True
                 except ValueError:
@@ -178,7 +181,7 @@ async def safe_send_text(message: types.Message, text: str) -> None:
     for chunk in split_text(text):
         try:
             await message.answer(chunk)
-        except TelegramBadRequest as e:
+        except TelegramBadRequest:
             await message.answer(html.escape(chunk), parse_mode=None)
 
 async def safe_delete(message: types.Message | None) -> None:
@@ -225,7 +228,12 @@ async def cmd_admin(message: types.Message):
         f"💬 Остаток текстов: *{total_texts}*\n"
         f"🎨 Остаток картинок: *{total_imgs}*\n\n"
         "➕ Начислить: `/add ID тексты картинки`\n"
-        "Пример: `/add 123456789 100 10`",
+        "➖ Забрать: `/take ID тексты картинки`\n"
+        "👤 Инфо: `/info ID`\n"
+        "🚫 Бан: `/ban ID`\n"
+        "✅ Разбан: `/unban ID`\n"
+        "🏆 Топ: `/top`\n"
+        "📢 Рассылка: `/broadcast Текст`",
         parse_mode="Markdown",
     )
 
@@ -248,6 +256,108 @@ async def cmd_add_balance(message: types.Message):
         await bot.send_message(target_id, f"🎁 Администратор начислил тебе *+{add_t} текстов* и *+{add_i} картинок*!", parse_mode="Markdown")
     except Exception: pass
 
+@dp.message(Command("take"))
+async def cmd_take_balance(message: types.Message):
+    if not is_admin(message.from_user.id): return
+    parts = message.text.split()
+    if len(parts) != 4:
+        await message.answer("⚠️ Формат: `/take ID тексты картинки`", parse_mode="Markdown")
+        return
+    try:
+        target_id, take_t, take_i = int(parts[1]), int(parts[2]), int(parts[3])
+    except ValueError:
+        await message.answer("⚠️ ID и числа должны быть целыми.")
+        return
+    update_balance(target_id, text_delta=-take_t, img_delta=-take_i)
+    await message.answer(f"✅ У пользователя `{target_id}` списано {take_t} текстов и {take_i} картинок.", parse_mode="Markdown")
+
+@dp.message(Command("info"))
+async def cmd_info(message: types.Message):
+    if not is_admin(message.from_user.id): return
+    parts = message.text.split()
+    if len(parts) != 2:
+        await message.answer("⚠️ Формат: `/info ID_пользователя`", parse_mode="Markdown")
+        return
+    try:
+        target_id = int(parts[1])
+    except ValueError:
+        await message.answer("⚠️ ID должен быть числом.")
+        return
+    with closing(get_conn()) as conn:
+        cur = conn.execute("SELECT text_balance, img_balance, has_made_request, is_banned FROM users WHERE user_id = ?", (target_id,))
+        row = cur.fetchone()
+    if not row:
+        await message.answer("❌ Пользователь не найден в базе.")
+        return
+    await message.answer(
+        f"👤 *Информация о пользователе `{target_id}`*\n\n"
+        f"💬 Текстов: *{row[0]}*\n"
+        f"🎨 Картинок: *{row[1]}*\n"
+        f"✅ Сделал запрос: {'Да' if row[2] else 'Нет'}\n"
+        f"🚫 Забанен: {'Да' if row[3] else 'Нет'}",
+        parse_mode="Markdown"
+    )
+
+@dp.message(Command("ban"))
+async def cmd_ban(message: types.Message):
+    if not is_admin(message.from_user.id): return
+    parts = message.text.split()
+    if len(parts) != 2: return
+    try: target_id = int(parts[1])
+    except ValueError: return
+    with closing(get_conn()) as conn:
+        conn.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (target_id,))
+        conn.commit()
+    await message.answer(f"🚫 Пользователь `{target_id}` забанен.", parse_mode="Markdown")
+
+@dp.message(Command("unban"))
+async def cmd_unban(message: types.Message):
+    if not is_admin(message.from_user.id): return
+    parts = message.text.split()
+    if len(parts) != 2: return
+    try: target_id = int(parts[1])
+    except ValueError: return
+    with closing(get_conn()) as conn:
+        conn.execute("UPDATE users SET is_banned = 0 WHERE user_id = ?", (target_id,))
+        conn.commit()
+    await message.answer(f"✅ Пользователь `{target_id}` разбанен.", parse_mode="Markdown")
+
+@dp.message(Command("top"))
+async def cmd_top(message: types.Message):
+    if not is_admin(message.from_user.id): return
+    with closing(get_conn()) as conn:
+        cur = conn.execute("SELECT user_id, text_balance, img_balance FROM users ORDER BY (text_balance + img_balance) DESC LIMIT 10")
+        rows = cur.fetchall()
+    if not rows:
+        await message.answer("База пуста.")
+        return
+    text = "🏆 *Топ-10 пользователей по балансу:*\n\n"
+    for i, row in enumerate(rows, 1):
+        text += f"{i}. `{row[0]}` | 💬 {row[1]} | 🎨 {row[2]}\n"
+    await message.answer(text, parse_mode="Markdown")
+
+@dp.message(Command("broadcast"))
+async def cmd_broadcast(message: types.Message):
+    if not is_admin(message.from_user.id): return
+    text_to_send = message.text.replace("/broadcast", "").strip()
+    if not text_to_send:
+        await message.answer("⚠️ Напишите текст после команды. Пример:\n`/broadcast Всем привет!`", parse_mode="Markdown")
+        return
+    await message.answer("⏳ Начинаю рассылку...")
+    with closing(get_conn()) as conn:
+        cur = conn.execute("SELECT user_id FROM users WHERE is_banned = 0")
+        users = cur.fetchall()
+    success, failed = 0, 0
+    for (user_id,) in users:
+        try:
+            await bot.send_message(user_id, text_to_send)
+            success += 1
+            await asyncio.sleep(0.05)
+        except Exception:
+            failed += 1
+    await message.answer(f"✅ *Рассылка завершена!*\n\nДоставлено: {success}\nОшибок: {failed}", parse_mode="Markdown")
+
+
 @dp.message(F.text == "✍️ Написать / Решить задачу")
 async def mode_fast(message: types.Message):
     user_modes[message.from_user.id] = "fast"
@@ -263,6 +373,7 @@ async def mode_image(message: types.Message):
     (_, img_bal), _ = get_user(message.from_user.id)
     if img_bal <= 0:
         await message.answer("❌ Закончились генерации картинок.")
+        user_modes[message.from_user.id] = "fast" # <--- ДОБАВЛЕНО: Авто-сброс режима
         return
     user_modes[message.from_user.id] = "image"
     await message.answer("🎨 Режим *Генерация картинок* включён. Опиши, что нарисовать:", parse_mode="Markdown")
@@ -310,7 +421,6 @@ async def cb_menu_back(callback: types.CallbackQuery):
     await callback.message.edit_text("💎 *Выбери способ пополнения:*", reply_markup=buy_menu_kb, parse_mode="Markdown")
     await callback.answer()
 
-# ---------- ОПЛАТА ЗВЕЗДАМИ ----------
 async def send_invoice(chat_id: int, title: str, description: str, payload: str, stars_amount: int):
     await bot.send_invoice(chat_id=chat_id, title=title, description=description, payload=payload, provider_token="", currency="XTR", prices=[LabeledPrice(label=title, amount=stars_amount)])
 
@@ -342,6 +452,20 @@ async def process_successful_payment(message: types.Message):
 @dp.message(F.text & ~F.text.startswith("/"))
 async def handle_text(message: types.Message):
     user_id = message.from_user.id
+    
+    # Проверка на бан
+    with closing(get_conn()) as conn:
+        cur = conn.execute("SELECT is_banned FROM users WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        if row and row[0] == 1:
+            await message.answer("⛔ Вы заблокированы в этом боте.")
+            return
+
+    # Проверка на ежедневный бонус перед любым текстовым запросом
+    (text_bal, img_bal), status = get_user(user_id)
+    if status == "daily_bonus":
+        await message.answer("🎁 *Ежедневный бонус:* Тебе начислен +1 текстовый запрос!", parse_mode="Markdown")
+
     mode = user_modes.get(user_id, "fast")
 
     ref_paid_to = check_and_pay_referral(user_id)
@@ -352,6 +476,7 @@ async def handle_text(message: types.Message):
     if mode == "image":
         if not try_consume(user_id, "img"): 
             await message.answer("❌ Закончились генерации.")
+            user_modes[user_id] = "fast" # <--- ДОБАВЛЕНО: Авто-сброс режима
             return
         
         wait_msg = await message.answer("🎨 Рисую...")
@@ -362,22 +487,17 @@ async def handle_text(message: types.Message):
             await safe_delete(wait_msg)
             (_, img_bal), _ = get_user(user_id)
             
-            # --- ИСПРАВЛЕННЫЙ БЛОК ОТПРАВКИ КАРТИНКИ ---
             if getattr(image_data, 'url', None):
-                # Если API вернул прямую ссылку на изображение
                 await message.answer_photo(photo=image_data.url, caption=f"✅ Готово! Осталось: {img_bal}")
             elif getattr(image_data, 'b64_json', None):
-                # Если API вернул base64 строку, декодируем её в байты
                 image_bytes = base64.b64decode(image_data.b64_json)
-                # Создаем файл в памяти для отправки в Telegram
                 photo_file = BufferedInputFile(image_bytes, filename="image.png")
                 await message.answer_photo(photo=photo_file, caption=f"✅ Готово! Осталось: {img_bal}")
             else:
                 raise ValueError("API не вернул ни URL, ни base64 данные.")
-            # --------------------------------------------
 
         except Exception as e:
-            update_balance(user_id, img_delta=1) # Возвращаем баланс при ошибке
+            update_balance(user_id, img_delta=1)
             await safe_delete(wait_msg)
             await message.answer(f"⚠️ Ошибка генерации: {str(e)[:100]}")
         return
@@ -401,6 +521,15 @@ async def handle_text(message: types.Message):
 @dp.message(F.voice)
 async def handle_voice(message: types.Message):
     user_id = message.from_user.id
+    
+    # Проверка на бан
+    with closing(get_conn()) as conn:
+        cur = conn.execute("SELECT is_banned FROM users WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        if row and row[0] == 1:
+            await message.answer("⛔ Вы заблокированы в этом боте.")
+            return
+
     if not try_consume(user_id, "text", amount=2):
         await message.answer("❌ Закончились запросы (для голоса нужно 2).")
         return
@@ -426,9 +555,13 @@ async def handle_voice(message: types.Message):
         await safe_delete(wait_msg)
         await message.answer(f"⚠️ Ошибка: {str(e)[:100]}")
 
+@dp.message(F.photo | F.document)
+async def handle_photo_doc(message: types.Message):
+    await message.answer("⚠️ Я работаю только с текстом и голосом. Пожалуйста, напиши свой вопрос текстом или отправь голосовое сообщение!")
+
 @dp.message()
 async def fallback(message: types.Message):
-    await message.answer("Отправь текст, голос или фото, либо выбери режим в меню 👇", reply_markup=main_kb)
+    await message.answer("Отправь текст, голос или выбери режим в меню 👇", reply_markup=main_kb)
 
 # ---------- Запуск ----------
 async def main() -> None:
