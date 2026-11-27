@@ -51,6 +51,7 @@ def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    # Создаем таблицу с полем для времени бонуса
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -66,7 +67,7 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 def get_user(user_id: int, ref_id: int = 0) -> tuple[tuple[int, int], str]:
-    """Возвращает баланс и статус."""
+    """Возвращает баланс и статус (daily_bonus, new, existing)."""
     with closing(get_conn()) as conn:
         cur = conn.execute(
             "SELECT text_balance, img_balance, last_bonus_time FROM users WHERE user_id = ?",
@@ -85,8 +86,8 @@ def get_user(user_id: int, ref_id: int = 0) -> tuple[tuple[int, int], str]:
             else:
                 try:
                     last_time = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S")
-                    # Если прошло больше 24 часов или изменился день
-                    if (now - last_time) > timedelta(hours=24) or now.date() > last_time.date():
+                    # Бонус раз в 24 часа
+                    if (now - last_time) > timedelta(hours=24):
                         give_bonus = True
                 except ValueError:
                     give_bonus = True
