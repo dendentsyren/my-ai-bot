@@ -350,19 +350,36 @@ async def handle_text(message: types.Message):
         except: pass
 
     if mode == "image":
-        if not try_consume(user_id, "img"): await message.answer("❌ Закончились генерации."); return
+        if not try_consume(user_id, "img"): 
+            await message.answer("❌ Закончились генерации.")
+            return
+        
         wait_msg = await message.answer("🎨 Рисую...")
         try:
             response = await ai_client.images.generate(model=MODEL_IMAGE, prompt=message.text)
             image_data = response.data[0]
-            url = image_data.url if image_data.url else f"data:image/png;base64,{image_data.b64_json}"
+            
             await safe_delete(wait_msg)
             (_, img_bal), _ = get_user(user_id)
-            await message.answer_photo(photo=url, caption=f"✅ Готово! Осталось: {img_bal}")
+            
+            # --- ИСПРАВЛЕННЫЙ БЛОК ОТПРАВКИ КАРТИНКИ ---
+            if getattr(image_data, 'url', None):
+                # Если API вернул прямую ссылку на изображение
+                await message.answer_photo(photo=image_data.url, caption=f"✅ Готово! Осталось: {img_bal}")
+            elif getattr(image_data, 'b64_json', None):
+                # Если API вернул base64 строку, декодируем её в байты
+                image_bytes = base64.b64decode(image_data.b64_json)
+                # Создаем файл в памяти для отправки в Telegram
+                photo_file = BufferedInputFile(image_bytes, filename="image.png")
+                await message.answer_photo(photo=photo_file, caption=f"✅ Готово! Осталось: {img_bal}")
+            else:
+                raise ValueError("API не вернул ни URL, ни base64 данные.")
+            # --------------------------------------------
+
         except Exception as e:
-            update_balance(user_id, img_delta=1)
+            update_balance(user_id, img_delta=1) # Возвращаем баланс при ошибке
             await safe_delete(wait_msg)
-            await message.answer(f"⚠️ Ошибка: {str(e)[:100]}")
+            await message.answer(f"⚠️ Ошибка генерации: {str(e)[:100]}")
         return
 
     cost = 5 if mode == "smart" else 1
