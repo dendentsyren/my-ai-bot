@@ -46,6 +46,10 @@ ai_client = AsyncOpenAI(api_key=API_KEY, base_url=BASE_URL)
 user_modes: dict[int, str] = {}
 bot_username: str | None = None
 
+# Временное хранилище промптов для картинок (до выбора стиля)
+# Формат: {user_id: "текст запроса"}
+pending_image_prompts: dict[int, str] = {}
+
 # ---------- БД ----------
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
@@ -184,6 +188,15 @@ single_kb = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_back")]
 ])
 
+# Новая клавиатура для выбора стиля картинки
+style_kb = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="📸 Фотореализм", callback_data="style_realism")],
+    [InlineKeyboardButton(text="🎌 Аниме", callback_data="style_anime")],
+    [InlineKeyboardButton(text="🧊 3D-Графика", callback_data="style_3d")],
+    [InlineKeyboardButton(text="🌆 Киберпанк", callback_data="style_cyberpunk")],
+    [InlineKeyboardButton(text="🎨 Без стиля (как есть)", callback_data="style_none")]
+])
+
 # ---------- Утилиты ----------
 def split_text(text: str, limit: int = 4000) -> list[str]:
     return [text[i:i + limit] for i in range(0, len(text), limit)] or [""]
@@ -211,6 +224,7 @@ async def cmd_start(message: types.Message):
 
     (text_bal, img_bal), status = get_user(message.from_user.id, ref_id)
     user_modes[message.from_user.id] = "fast"
+    pending_image_prompts.pop(message.from_user.id, None)
 
     bonus_text = ""
     if status == "daily_bonus":
@@ -372,11 +386,13 @@ async def cmd_broadcast(message: types.Message):
 @dp.message(F.text == "✍️ Написать / Решить задачу")
 async def mode_fast(message: types.Message):
     user_modes[message.from_user.id] = "fast"
+    pending_image_prompts.pop(message.from_user.id, None)
     await message.answer("✍️ Режим *Быстрый текст* включён. Напиши вопрос или отправь голосовое:", parse_mode="Markdown")
 
 @dp.message(F.text == "🧠 Сложный анализ / Код")
 async def mode_smart(message: types.Message):
     user_modes[message.from_user.id] = "smart"
+    pending_image_prompts.pop(message.from_user.id, None)
     await message.answer("🧠 Режим *Глубокий анализ* включён.\n⚠️ Списывает *5 запросов* за ответ.", parse_mode="Markdown")
 
 @dp.message(F.text == "🎨 Создать картинку")
@@ -387,6 +403,7 @@ async def mode_image(message: types.Message):
         user_modes[message.from_user.id] = "fast"
         return
     user_modes[message.from_user.id] = "image"
+    pending_image_prompts.pop(message.from_user.id, None)
     await message.answer("🎨 Режим *Генерация картинок* включён. Опиши, что нарисовать:", parse_mode="Markdown")
 
 @dp.message(F.text == "👤 Мой профиль / Баланс")
@@ -483,32 +500,17 @@ async def handle_text(message: types.Message):
         except: pass
 
     if mode == "image":
-        if not try_consume(user_id, "img"): 
+        # Вместо генерации сразу, мы сохраняем промпт и просим выбрать стиль
+        if img_bal <= 0:
             await message.answer("❌ Закончились генерации.")
             user_modes[user_id] = "fast" 
             return
         
-        wait_msg = await message.answer("🎨 Рисую...")
-        try:
-            response = await ai_client.images.generate(model=MODEL_IMAGE, prompt=message.text)
-            image_data = response.data[0]
-            
-            await safe_delete(wait_msg)
-            (_, img_bal), _ = get_user(user_id)
-            
-            if getattr(image_data, 'url', None):
-                await message.answer_photo(photo=image_data.url, caption=f"✅ Готово! Осталось: {img_bal}")
-            elif getattr(image_data, 'b64_json', None):
-                image_bytes = base64.b64decode(image_data.b64_json)
-                photo_file = BufferedInputFile(image_bytes, filename="image.png")
-                await message.answer_photo(photo=photo_file, caption=f"✅ Готово! Осталось: {img_bal}")
-            else:
-                raise ValueError("API не вернул ни URL, ни base64 данные.")
-
-        except Exception as e:
-            update_balance(user_id, img_delta=1)
-            await safe_delete(wait_msg)
-            await message.answer(f"⚠️ Ошибка генерации: {str(e)[:100]}")
+        pending_image_prompts[user_id] = message.text
+        await message.answer(
+            "🎨 Отлично! Теперь выбери стиль для твоей картинки (это бесплатно):",
+            reply_markup=style_kb
+        )
         return
 
     cost = 5 if mode == "smart" else 1
@@ -526,6 +528,57 @@ async def handle_text(message: types.Message):
         update_balance(user_id, text_delta=cost)
         await safe_delete(wait_msg)
         await message.answer(f"⚠️ Ошибка: {str(e)[:100]}")
+
+# ---------- ОБРАБОТКА ВЫБОРА СТИЛЯ ----------
+@dp.callback_query(F.data.startswith("style_"))
+async def process_style_choice(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    prompt = pending_image_prompts.pop(user_id, None)
+
+    if not prompt:
+        await callback.message.edit_text("⚠️ Запрос устарел. Пожалуйста, нажми '🎨 Создать картинку' и напиши запрос заново.")
+        return
+
+    # Формируем финальный промпт в зависимости от стиля
+    style = callback.data
+    if style == "style_realism":
+        final_prompt = f"{prompt}, фотореализм, 8k, высокое качество, детализированное фото"
+    elif style == "style_anime":
+        final_prompt = f"{prompt}, аниме стиль, 2d, студия гибли, яркие цвета"
+    elif style == "style_3d":
+        final_prompt = f"{prompt}, 3d рендер, pixar, blender, высокое качество"
+    elif style == "style_cyberpunk":
+        final_prompt = f"{prompt}, киберпанк стиль, неон, футуризм, 8k"
+    else:
+        final_prompt = prompt # Без стиля
+
+    await callback.message.edit_text(f"🎨 Рисую в выбранном стиле...")
+
+    if not try_consume(user_id, "img"):
+        await callback.message.edit_text("❌ Закончились генерации.")
+        user_modes[user_id] = "fast"
+        return
+
+    try:
+        response = await ai_client.images.generate(model=MODEL_IMAGE, prompt=final_prompt)
+        image_data = response.data[0]
+        
+        (_, img_bal), _ = get_user(user_id)
+        
+        if getattr(image_data, 'url', None):
+            await callback.message.answer_photo(photo=image_data.url, caption=f"✅ Готово! Осталось: {img_bal}")
+        elif getattr(image_data, 'b64_json', None):
+            image_bytes = base64.b64decode(image_data.b64_json)
+            photo_file = BufferedInputFile(image_bytes, filename="image.png")
+            await callback.message.answer_photo(photo=photo_file, caption=f"✅ Готово! Осталось: {img_bal}")
+        else:
+            raise ValueError("API не вернул ни URL, ни base64 данные.")
+
+    except Exception as e:
+        update_balance(user_id, img_delta=1) # Возврат баланса
+        await callback.message.answer(f"⚠️ Ошибка генерации: {str(e)[:100]}")
+    
+    await callback.answer()
 
 @dp.message(F.voice)
 async def handle_voice(message: types.Message):
