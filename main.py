@@ -47,7 +47,6 @@ user_modes: dict[int, str] = {}
 bot_username: str | None = None
 
 # Временное хранилище промптов для картинок (до выбора стиля)
-# Формат: {user_id: "текст запроса"}
 pending_image_prompts: dict[int, str] = {}
 
 # ---------- БД ----------
@@ -188,7 +187,7 @@ single_kb = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_back")]
 ])
 
-# Новая клавиатура для выбора стиля картинки
+# Клавиатура для выбора стиля картинки
 style_kb = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="📸 Фотореализм", callback_data="style_realism")],
     [InlineKeyboardButton(text="🎌 Аниме", callback_data="style_anime")],
@@ -470,11 +469,50 @@ async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
 async def process_successful_payment(message: types.Message):
     payload = message.successful_payment.invoice_payload
     user_id = message.from_user.id
-    if payload == "buy_pack_start": update_balance(user_id, 100, 10); await message.answer("✅ Начислено 100 текстов и 10 картинок!")
-    elif payload == "buy_pack_opt": update_balance(user_id, 300, 35); await message.answer("✅ Начислено 300 текстов и 35 картинок!")
-    elif payload == "buy_pack_pro": update_balance(user_id, 1000, 80); await message.answer("✅ Начислено 1000 текстов и 80 картинок!")
-    elif payload == "buy_single_img": update_balance(user_id, 0, 1); await message.answer("✅ Начислена 1 картинка!")
-    elif payload == "buy_single_text": update_balance(user_id, 10, 0); await message.answer("✅ Начислено 10 текстов!")
+    username = message.from_user.username or "без_юзернейма"
+    first_name = message.from_user.first_name or "Пользователь"
+    
+    # Определяем, что купили, и начисляем баланс
+    if payload == "buy_pack_start":
+        update_balance(user_id, 100, 10)
+        item = "Тариф Старт (100 текстов + 10 картинок)"
+        stars = 200
+    elif payload == "buy_pack_opt":
+        update_balance(user_id, 300, 35)
+        item = "Тариф Оптимальный (300 текстов + 35 картинок)"
+        stars = 550
+    elif payload == "buy_pack_pro":
+        update_balance(user_id, 1000, 80)
+        item = "Тариф Профи (1000 текстов + 80 картинок)"
+        stars = 1500
+    elif payload == "buy_single_img":
+        update_balance(user_id, 0, 1)
+        item = "1 Генерация картинки"
+        stars = 15
+    elif payload == "buy_single_text":
+        update_balance(user_id, 10, 0)
+        item = "10 Текстовых запросов"
+        stars = 10
+    else:
+        return
+
+    # Сообщение пользователю
+    await message.answer(f"✅ Успешная оплата! Начислено: {item}.")
+
+    # --- УВЕДОМЛЕНИЕ АДМИНУ ---
+    if ADMIN_ID != 0:
+        try:
+            await bot.send_message(
+                ADMIN_ID,
+                f"💰 **НОВАЯ ОПЛАТА!**\n\n"
+                f"👤 Пользователь: {first_name} (@{username})\n"
+                f"🆔 ID: `{user_id}`\n"
+                f"📦 Товар: {item}\n"
+                f"⭐ Сумма: {stars} звезд",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass # Если админ заблокировал бота, ничего не делаем
 
 # ---------- ОБРАБОТКА КОНТЕНТА ----------
 @dp.message(F.text & ~F.text.startswith("/"))
